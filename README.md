@@ -11,11 +11,17 @@ A FastAPI-based backend service for processing and analyzing documents using AI.
 
 ## Deployment
 
-### Railway Deployment
+### Render Deployment
 
-1. Create a new project on Railway
-2. Connect your GitHub repository
-3. Deploy the application
+1. Create a new account at [Render](https://render.com)
+2. Create a new Web Service
+3. Connect your GitHub repository
+4. Configure the service:
+   - Build Command: `docker build -t web .`
+   - Start Command: `docker run -p $PORT:8000 web`
+   - Port: `8000`
+5. Set environment variables:
+   - `GENAI_API_KEY`: Your Google Generative AI API key
 
 ### Local Development
 
@@ -52,4 +58,4 @@ uvicorn main:app --reload
 - Python 3.8+
 - FastAPI
 - Google Generative AI API key
-- Railway account for deployment
+- Render account for deployment
