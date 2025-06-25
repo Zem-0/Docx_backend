@@ -1,0 +1,11 @@
+[build]
+image = "python:3.8-slim"
+
+[build.env]
+PYTHONUNBUFFERED = "1"
+
+[deploy]
+command = "uvicorn main:app --host=0.0.0.0 --port=${PORT:-8000}"
+
+[deploy.env]
+GENAI_API_KEY = "${GENAI_API_KEY}"
