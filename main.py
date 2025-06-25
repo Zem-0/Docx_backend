@@ -14,6 +14,8 @@ import uuid
 from collections import Counter
 import re
 import logging
+import sqlite3
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -54,107 +56,144 @@ class DocumentUploadResponse(BaseModel):
 
 class DocumentStore:
     def __init__(self):
-        self.documents = {}
+        self.db_path = Path("documents.db")
+        self._initialize_db()
         logger.debug("Initialized DocumentStore")
         
+    def _initialize_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    text TEXT,
+                    chunks TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+    
     def add_document(self, text: str) -> str:
         doc_id = str(uuid.uuid4())
         chunks = self._split_text(text)
-        self.documents[doc_id] = {
-            "text": text,
-            "chunks": chunks
-        }
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO documents (id, text, chunks)
+                VALUES (?, ?, ?)
+            ''', (doc_id, text, json.dumps(chunks)))
+            conn.commit()
+        
         logger.debug(f"Added document with ID: {doc_id}")
         logger.debug(f"Document chunks: {len(chunks)}")
         return doc_id
     
     def get_document(self, doc_id: str) -> Optional[str]:
         logger.debug(f"Retrieving document with ID: {doc_id}")
-        doc = self.documents.get(doc_id)
-        if doc:
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT text FROM documents WHERE id = ?', (doc_id,))
+            result = cursor.fetchone()
+            
+        if result:
+            text = result[0]
             logger.debug(f"Document found!")
-            logger.debug(f"Document text length: {len(doc.get('text', ''))}")
-            logger.debug(f"Number of chunks: {len(doc.get('chunks', []))}")
+            logger.debug(f"Document text length: {len(text)}")
+            return text
         else:
             logger.debug(f"Document not found in store")
-            logger.debug(f"Current documents in store: {len(self.documents)}")
-            logger.debug(f"Document IDs in store: {list(self.documents.keys())}")
-        return doc.get("text") if doc else None
-
+            logger.debug(f"Current documents in store: {len(self._get_all_documents())}")
+            return None
+    
     def get_chunks(self, doc_id: str) -> Optional[List[str]]:
         logger.debug(f"Retrieving chunks for document ID: {doc_id}")
-        doc = self.documents.get(doc_id)
-        if doc:
-            chunks = doc.get("chunks", [])
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT chunks FROM documents WHERE id = ?', (doc_id,))
+            result = cursor.fetchone()
+            
+        if result:
+            chunks = json.loads(result[0])
             logger.debug(f"Found {len(chunks)} chunks")
             if chunks:
                 logger.debug(f"First chunk length: {len(chunks[0])}")
+            return chunks
         else:
             logger.debug(f"Document not found in store")
-            logger.debug(f"Current documents in store: {len(self.documents)}")
-            logger.debug(f"Document IDs in store: {list(self.documents.keys())}")
-        return doc.get("chunks") if doc else None
+            logger.debug(f"Current documents in store: {len(self._get_all_documents())}")
+            return None
+    
+    def _get_all_documents(self) -> List[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM documents')
+            return [row[0] for row in cursor.fetchall()]
     
     def find_relevant_chunks(self, doc_id: str, query: str, num_chunks: int = 3) -> List[str]:
         chunks = self.get_chunks(doc_id)
         if not chunks:
+            logger.error(f"No chunks found for document ID: {doc_id}")
             return []
             
-        # Clean and tokenize query and chunks
-        query_tokens = self._clean_text(query).split()
-        chunk_scores = []
+        cleaned_query = self._clean_text(query)
+        query_tokens = set(cleaned_query.split())
         
-        for chunk in chunks:
-            chunk_tokens = self._clean_text(chunk).split()
-            score = self._calculate_similarity(query_tokens, chunk_tokens)
-            chunk_scores.append((chunk, score))
+        similarities = []
+        for i, chunk in enumerate(chunks):
+            cleaned_chunk = self._clean_text(chunk)
+            chunk_tokens = set(cleaned_chunk.split())
+            similarity = self._calculate_similarity(query_tokens, chunk_tokens)
+            similarities.append((i, similarity))
             
-        # Sort chunks by similarity score and get top N
-        chunk_scores.sort(key=lambda x: x[1], reverse=True)
-        return [chunk for chunk, _ in chunk_scores[:num_chunks]]
-
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        relevant_chunks = [chunks[i] for i, _ in similarities[:num_chunks]]
+        
+        logger.debug(f"Found {len(relevant_chunks)} relevant chunks")
+        return relevant_chunks
+    
     def _split_text(self, text: str) -> List[str]:
-        """Split text into chunks of about 1000 characters."""
-        chunk_size = 1000
         chunks = []
-        current_chunk = ""
+        current_chunk = []
+        current_length = 0
         
-        # Split text by paragraphs
-        paragraphs = text.split('\n')
+        # Split text into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text)
         
-        for para in paragraphs:
-            if len(current_chunk) + len(para) + 1 <= chunk_size:
-                current_chunk += para + "\n"
+        for sentence in sentences:
+            sentence_length = len(sentence)
+            
+            # If adding this sentence would exceed our chunk size
+            if current_length + sentence_length > 1000:
+                # Add the current chunk to the list
+                chunks.append(' '.join(current_chunk))
+                # Start a new chunk with this sentence
+                current_chunk = [sentence]
+                current_length = sentence_length
             else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = para + "\n"
+                # Add sentence to current chunk
+                current_chunk.append(sentence)
+                current_length += sentence_length
         
+        # Add the last chunk if it's not empty
         if current_chunk:
-            chunks.append(current_chunk.strip())
+            chunks.append(' '.join(current_chunk))
         
+        logger.debug(f"Split text into {len(chunks)} chunks")
         return chunks
     
     def _clean_text(self, text: str) -> str:
-        """Clean text by removing special characters and making lowercase."""
         # Remove special characters and make lowercase
         text = re.sub(r'[^\w\s]', '', text)
         return text.lower()
     
     def _calculate_similarity(self, tokens1: List[str], tokens2: List[str]) -> float:
-        """Calculate Jaccard similarity between two sets of tokens."""
-        # Simple word overlap similarity
-        tokens1 = set(tokens1)
-        tokens2 = set(tokens2)
-        
         # Calculate Jaccard similarity
-        intersection = tokens1.intersection(tokens2)
-        union = tokens1.union(tokens2)
-        
-        if not union:
-            return 0.0
-            
-        return len(intersection) / len(union)
+        intersection = len(tokens1.intersection(tokens2))
+        union = len(tokens1.union(tokens2))
+        return intersection / union if union > 0 else 0
 
 document_store = DocumentStore()
 
@@ -213,6 +252,19 @@ async def chat_with_document(message: ChatMessage):
     logger.debug(f"Chat request with document ID: {message.document_id}")
     logger.debug(f"Message: {message.message}")
     
+    # Validate document ID
+    all_documents = document_store._get_all_documents()
+    if message.document_id not in all_documents:
+        logger.error(f"Invalid document ID: {message.document_id}")
+        logger.error(f"Available documents: {all_documents}")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Document not found",
+                "available_documents": all_documents
+            }
+        )
+    
     doc_id = message.document_id
     document_text = document_store.get_document(doc_id)
     if not document_text:
@@ -245,8 +297,8 @@ async def summarize_document(content: DocumentContent):
     document_text = document_store.get_document(doc_id)
     if not document_text:
         logger.error(f"Document not found for ID: {doc_id}")
-        logger.error(f"Current documents in store: {len(document_store.documents)}")
-        logger.error(f"Document IDs in store: {list(document_store.documents.keys())}")
+        logger.error(f"Current documents in store: {len(document_store._get_all_documents())}")
+        logger.error(f"Document IDs in store: {list(document_store._get_all_documents())}")
         raise HTTPException(status_code=404, detail="Document not found")
 
     # Find relevant chunks for summary
@@ -296,6 +348,13 @@ async def create_revision_notes(content: DocumentContent):
     
     response = model.generate_content(prompt)
     return {"notes": str(response.text)}
+
+@app.get("/documents")
+async def list_documents():
+    """List all stored documents."""
+    documents = document_store._get_all_documents()
+    logger.debug(f"Listing documents: {documents}")
+    return {"documents": documents}
 
 if __name__ == "__main__":
     import uvicorn
