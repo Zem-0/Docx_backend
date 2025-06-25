@@ -1,4 +1,4 @@
-FROM python:3.8-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN pip install --upgrade pip
 
 # Copy requirements and install dependencies
 COPY requirements.txt .

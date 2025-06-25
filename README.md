@@ -55,7 +55,7 @@ uvicorn main:app --reload
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.9+
 - FastAPI
 - Google Generative AI API key
 - Render account for deployment
