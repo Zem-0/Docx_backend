@@ -2,11 +2,12 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including SQLite3
 RUN apt-get update && apt-get install -y \
     build-essential \
     python3-dev \
     libpq-dev \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
